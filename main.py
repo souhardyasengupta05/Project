@@ -5,6 +5,7 @@ from typing import List, Dict
 import statistics
 import json
 import os
+import math
 
 app = FastAPI()
 
@@ -85,10 +86,12 @@ async def calculate_metrics(request: LatencyRequest):
         # 1. Average latency (mean)
         avg_latency = statistics.mean(latencies)
         
-        # 2. 95th percentile latency
+        # 2. 95th percentile latency (corrected calculation)
         sorted_latencies = sorted(latencies)
-        p95_index = int(0.95 * len(sorted_latencies))
-        p95_latency = sorted_latencies[p95_index] if p95_index < len(sorted_latencies) else sorted_latencies[-1]
+        n = len(sorted_latencies)
+        p95_index = math.ceil(0.95 * n) - 1
+        p95_index = min(p95_index, n - 1)
+        p95_latency = sorted_latencies[p95_index]
         
         # 3. Average uptime (percentage of records below/equal to threshold)
         uptime_records = len([latency for latency in latencies if latency <= request.threshold_ms])
