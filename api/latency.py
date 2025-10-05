@@ -6,18 +6,20 @@ import math
 
 app = FastAPI()
 
+# Enable CORS for all origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["POST", "OPTIONS"],
+    allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["*"],
 )
 
+# Request model
 class LatencyRequest(BaseModel):
     regions: List[str]
     threshold_ms: int
 
-# Embedded telemetry data - replace with your actual data
+# Your actual telemetry data
 TELEMETRY_DATA = [
   {
     "region": "apac",
@@ -273,35 +275,74 @@ TELEMETRY_DATA = [
   }
 ]
 
-def calculate_percentile(data, percentile):
-    if not data: return 0.0
+def calculate_percentile(data: List[float], percentile: float) -> float:
+    """Calculate percentile from a list of values"""
+    if not data:
+        return 0.0
+    
     sorted_data = sorted(data)
     n = len(sorted_data)
+    
+    if n == 1:
+        return sorted_data[0]
+    
+    # Calculate index for percentile
     index = (n - 1) * percentile / 100.0
-    lower = math.floor(index)
-    upper = math.ceil(index)
-    if lower == upper: return sorted_data[int(index)]
-    return sorted_data[lower] + (sorted_data[upper] - sorted_data[lower]) * (index - lower)
+    lower_index = math.floor(index)
+    upper_index = math.ceil(index)
+    
+    if lower_index == upper_index:
+        return sorted_data[int(index)]
+    
+    # Linear interpolation for more accurate percentile
+    lower_value = sorted_data[lower_index]
+    upper_value = sorted_data[upper_index]
+    weight = index - lower_index
+    
+    return lower_value + (upper_value - lower_value) * weight
 
 @app.post("/")
 async def analyze_latency(request: LatencyRequest):
+    """
+    Analyze latency metrics for specified regions
+    Accepts: {"regions": ["region1", "region2"], "threshold_ms": 180}
+    Returns: Per-region metrics including avg_latency, p95_latency, avg_uptime, breaches
+    """
     results = {}
+    
     for region in request.regions:
-        region_data = [item for item in TELEMETRY_DATA if item['region'] == region]
+        # Filter data for current region
+        region_data = [
+            item for item in TELEMETRY_DATA 
+            if item.get('region', '').lower() == region.lower()
+        ]
+        
         if not region_data:
-            results[region] = {"avg_latency": 0.0, "p95_latency": 0.0, "avg_uptime": 0.0, "breaches": 0}
+            # Return zeros if no data for region
+            results[region] = {
+                "avg_latency": 0.0,
+                "p95_latency": 0.0,
+                "avg_uptime": 0.0,
+                "breaches": 0
+            }
             continue
         
-        latencies = [item['latency'] for item in region_data]
+        # Extract latencies and uptime percentages
+        latencies = [item['latency_ms'] for item in region_data]
+        uptimes = [item['uptime_pct'] for item in region_data]
+        
+        # Calculate metrics
         avg_latency = sum(latencies) / len(latencies)
         p95_latency = calculate_percentile(latencies, 95)
-        breaches = sum(1 for l in latencies if l > request.threshold_ms)
-        avg_uptime = (len(latencies) - breaches) / len(latencies)
+        avg_uptime = sum(uptimes) / len(uptimes)
+        
+        # Calculate breaches (count of records where latency_ms > threshold_ms)
+        breaches = sum(1 for latency in latencies if latency > request.threshold_ms)
         
         results[region] = {
             "avg_latency": round(avg_latency, 2),
             "p95_latency": round(p95_latency, 2),
-            "avg_uptime": round(avg_uptime, 4),
+            "avg_uptime": round(avg_uptime, 2),
             "breaches": breaches
         }
     
@@ -309,4 +350,18 @@ async def analyze_latency(request: LatencyRequest):
 
 @app.get("/")
 async def root():
-    return {"message": "Latency Analysis API"}
+    return {
+        "message": "Latency Analysis API",
+        "usage": "POST JSON with {'regions': ['region1', ...], 'threshold_ms': 180}",
+        "available_regions": ["apac", "emea", "amer"],
+        "data_points": len(TELEMETRY_DATA)
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "data_points": len(TELEMETRY_DATA)}
+
+# Vercel serverless function handler
+from mangum import Handler
+handler = Handler(app)
